@@ -14,7 +14,8 @@ import torch.nn as nn
 import torch.optim as optim
 
 from sklearn.feature_extraction.text import HashingVectorizer
-
+from dotenv import load_dotenv
+load_dotenv()
 
 # =========================
 # Config + LLM Client
@@ -634,27 +635,29 @@ def evaluate_policy(
 
 def main():
     # ---- User config (edit these) ----
+    OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+    assert OPENAI_KEY, "OPENAI_API_KEY not found."
     target_cfg = LLMConfig(
-        base_url=os.getenv("TARGET_BASE_URL", "http://localhost:8000/v1"),
-        api_key=os.getenv("TARGET_API_KEY", ""),
-        model=os.getenv("TARGET_MODEL", "your-target-model"),
+        base_url="https://api.openai.com/v1",
+        api_key=OPENAI_KEY,
+        model="gpt-4o",
         temperature=0.2,
         max_tokens=512
     )
     judge_cfg = LLMConfig(
-        base_url=os.getenv("JUDGE_BASE_URL", "http://localhost:8000/v1"),
-        api_key=os.getenv("JUDGE_API_KEY", ""),
-        model=os.getenv("JUDGE_MODEL", "your-judge-model"),
+        base_url="https://api.openai.com/v1",
+        api_key=OPENAI_KEY,
+        model="gpt-4o",
         temperature=0.0,
         max_tokens=256
     )
     designer_cfg = LLMConfig(
-        base_url=os.getenv("DESIGNER_BASE_URL", judge_cfg.base_url),
-        api_key=os.getenv("DESIGNER_API_KEY", judge_cfg.api_key),
-        model=os.getenv("DESIGNER_MODEL", judge_cfg.model),
+        base_url="https://api.openai.com/v1",
+        api_key=OPENAI_KEY,
+        model="gpt-4o",
         temperature=0.2,
-        max_tokens=700
-    )
+        max_tokens=700 
+        )
 
     target_llm = OpenAICompatibleLLM(target_cfg)
     judge_llm = OpenAICompatibleLLM(judge_cfg)
