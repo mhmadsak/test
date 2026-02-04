@@ -70,8 +70,11 @@ def read_jsonl_dataset(path: str, limit: Optional[int] = None) -> List[Dict[str,
             line = line.strip()
             if not line:
                 continue
-            rows.append(json.loads(line))
-    # expected keys: "input", "label"
+            row = json.loads(line)
+            # Adjust the keys to match expected "input" and "label"
+            row["input"] = row.get("question", "")  # Replace "question" with "input"
+            row["label"] = row.get("answer", "")    # Replace "answer" with "label"
+            rows.append(row)
     return rows
 
 
@@ -129,29 +132,32 @@ def auto_slotify_prompt_with_llm(
     """
     examples = [
         {"input": r.get("input", ""), "label": r.get("label", "")}
-        for r in dataset_sample[:6]
+        for r in dataset_sample[:10]
     ]
 
     system = (
-        "You are a prompt-optimization assistant.\n"
-        "You will receive:\n"
-        "1) A base role prompt.\n"
-        "2) A few labeled dataset examples.\n\n"
-        "Task:\n"
-        "- Convert the base prompt into a TEMPLATE with {SLOT_NAMES} placeholders.\n"
-        "- Propose discrete OPTIONS for each slot (small sets).\n"
-        "- Keep slot count small and useful.\n"
-        "- Output JSON only, matching this schema:\n"
-        "{\n"
-        '  "template": "string with {SLOT} placeholders",\n'
-        '  "slots": { "SLOT_NAME": ["opt1","opt2",...], ... }\n'
-        "}\n"
-        "Constraints:\n"
-        f"- At most {max_slots} slots.\n"
-        f"- At most {max_options_per_slot} options per slot.\n"
-        "- Slot names must be UPPER_SNAKE_CASE.\n"
-        "- Ensure template still clearly defines the role and requirements.\n"
-    )
+    "You are a prompt-optimization assistant.\n"
+    "You will receive:\n"
+    "1) A base role prompt with potential placeholders for slots (e.g., 'You are a {ROLE}.')\n"
+    "2) A few labeled dataset examples.\n\n"
+    "Task:\n"
+    "- Convert the base prompt into a TEMPLATE with {SLOT_NAMES} placeholders.\n"
+    "- Propose discrete OPTIONS for each slot (small sets).\n"
+    "- If needed, add new slots to the prompt and create sentences that reference those slots.\n"
+    "- Add a sentence that addresses the {PROMPT_STYLE} slot (e.g., chain of thought, concise, etc.) to guide how the model should respond.\n"
+    "- Ensure that {PROMPT_STYLE} is included as a slot in the final template.\n"
+    "- Add any necessary sentences or context to make the template more comprehensive and clear.\n"
+    "- Output JSON only, matching this schema:\n"
+    "{\n"
+    '  "template": "string with {SLOT} placeholders",\n'
+    '  "slots": { "SLOT_NAME": ["opt1","opt2",...], ... }\n'
+    "}\n"
+    "Constraints:\n"
+    f"- At most {max_slots} slots.\n"
+    f"- At most {max_options_per_slot} options per slot.\n"
+    "- Slot names must be UPPER_SNAKE_CASE.\n"
+    "- Ensure template still clearly defines the role and requirements.\n"
+ )
 
     user = {
         "role": "user",
@@ -195,7 +201,7 @@ class StateEncoder:
     Uses HashingVectorizer so no fitting is needed.
     """
     def __init__(self, n_features: int = 1024):
-        self.vec = HashingVectorizer(n_features=n_features, alternate_sign=False, norm="l2")
+        self.vec = HashingVectorizer(n_features=n_features, alternate_sign=False, norm="l2") #####to be checked with bert
 
     def encode(self, x: str) -> torch.Tensor:
         X = self.vec.transform([x])                 # sparse
@@ -218,7 +224,7 @@ class SlotPolicy(nn.Module):
         self.slot_sizes = slot_sizes
 
         self.backbone = nn.Sequential(
-            nn.Linear(state_dim, hidden),
+            nn.Linear(state_dim, hidden),###more complex backbone can be used
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
@@ -314,7 +320,6 @@ def simple_label_score(y_pred: str, y_true: str) -> float:
     - exact match -> 1
     - substring match -> 0.6
     - else -> 0
-    You should replace with your proper metric for your task.
     """
     yp = (y_pred or "").strip().lower()
     yt = (y_true or "").strip().lower()
@@ -336,7 +341,7 @@ def compute_reward(
     y_true: str,
     judge: Dict[str, Any],
     tokens_proxy: int,
-    alpha: float = 0.7,
+    alpha: float = 0.2, ######
     lambda_cost: float = 0.001,
     beta_hall: float = 0.4,
     gamma_format: float = 0.2
