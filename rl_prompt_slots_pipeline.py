@@ -6,7 +6,7 @@ import random
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
+from baseline import evaluate_baseline
 import requests
 
 import torch
@@ -60,6 +60,21 @@ class OpenAICompatibleLLM:
 # =========================
 # Data I/O
 # =========================
+
+def train_test_split(
+    rows: List[Dict[str, Any]],
+    test_ratio: float = 0.2,
+    seed: int = 42
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    rng = random.Random(seed)
+    rows_shuffled = rows[:]
+    rng.shuffle(rows_shuffled)
+
+    n_test = int(len(rows_shuffled) * test_ratio)
+    test_rows = rows_shuffled[:n_test]
+    train_rows = rows_shuffled[n_test:]
+
+    return train_rows, test_rows
 
 def read_jsonl_dataset(path: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     rows = []
@@ -341,7 +356,7 @@ def compute_reward(
     y_true: str,
     judge: Dict[str, Any],
     tokens_proxy: int,
-    alpha: float = 0.2, ######
+    alpha: float = 0.2, ###### to be tested with different alpha values
     lambda_cost: float = 0.001,
     beta_hall: float = 0.4,
     gamma_format: float = 0.2
@@ -413,7 +428,7 @@ def train_slot_policy(
     lr: float = 3e-4,
     state_dim: int = 1024,
     hidden: int = 256,
-    alpha: float = 0.7,
+    alpha: float = 0.2, ####### to be tested with different alpha values
     cache_path: str = "judge_cache.jsonl",
     seed: int = 123
 ) -> None:
@@ -558,7 +573,60 @@ def infer_with_policy(
         "rendered_prompt": prompt,
         "output": y
     }
+def evaluate_policy(
+    rows,
+    policy_path,
+    target_llm,
+    judge_llm,
+    max_samples=200
+):
+    ps, policy, encoder = load_policy_bundle(policy_path)
 
+    scores = []
+    rewards = []
+
+    for row in rows[:max_samples]:
+        x = row["input"]
+        y_true = row["label"]
+
+        s = encoder.encode(x)
+        a_idx = policy.greedy_action(s)
+
+        slot_values = {k: ps.slots[k][idx] for k, idx in a_idx.items()}
+        prompt = render_prompt(ps.template, slot_values)
+
+        y_pred = target_llm.chat([
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": x},
+        ])
+
+        judge = llm_judge_score(
+            judge_llm,
+            x=x,
+            y_pred=y_pred,
+            y_true=y_true,
+            rubric_name="rl_prompt"
+        )
+
+        tokens_proxy = approx_token_count(prompt) \
+                       + approx_token_count(x) \
+                       + approx_token_count(y_pred)
+
+        r = compute_reward(
+            y_pred=y_pred,
+            y_true=y_true,
+            judge=judge,
+            tokens_proxy=tokens_proxy,
+            alpha=0.7
+        )
+
+        scores.append(judge["score"])
+        rewards.append(r)
+
+    return {
+        "avg_judge_score": sum(scores) / len(scores),
+        "avg_reward": sum(rewards) / len(rewards)
+    }
 
 # =========================
 # Example "main" usage
@@ -594,7 +662,12 @@ def main():
 
     # ---- Load data ----
     rows = read_jsonl_dataset("data.jsonl")
-    sample = sample_dataset(rows, n=12)
+    train_rows, test_rows = train_test_split(
+    rows,
+    test_ratio=0.2,
+    seed=42
+)
+    sample = sample_dataset(train_rows, n=12)
 
     # ---- Your base prompt (example) ----
     base_prompt = """You are an expert in providing comprehensive answers. Your job is to:
@@ -621,28 +694,36 @@ def main():
     # ---- Train RL policy ----
     train_slot_policy(
         prompt_space=prompt_space,
-        train_rows=rows[:200],              # start small
+        train_rows=train_rows[:200],              # start small
         target_llm=target_llm,
         judge_llm=judge_llm,
         out_policy_path="policy.pt",
-        epochs=1,
+        epochs=3,
         lr=3e-4,
         state_dim=1024,
         hidden=256,
-        alpha=0.7,
+        alpha=0.2, ####### to be tested with different alpha values
         cache_path="judge_cache.jsonl",
     )
 
-    # ---- Inference demo ----
-    result = infer_with_policy(
+
+    baseline_results = evaluate_baseline(
+        rows=test_rows,
+        target_llm=target_llm,
+        judge_llm=judge_llm,
+        base_prompt=base_prompt,
+        max_samples=200)
+
+    policy_results = evaluate_policy(
+        rows=test_rows,
         policy_path="policy.pt",
         target_llm=target_llm,
-        user_input="Is this question ambiguous: 'Is it big?' Explain.",
-        greedy=True
-    )
-    print("\n=== Inference ===")
-    print("Chosen slots:", result["chosen_slots"])
-    print("Output:\n", result["output"])
+        judge_llm=judge_llm,
+        max_samples=200)
+
+    print("\n=== FINAL COMPARISON ===")
+    print("Baseline:", baseline_results)
+    print("RL Prompt Policy:", policy_results)
 
 
 if __name__ == "__main__":
